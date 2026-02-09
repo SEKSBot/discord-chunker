@@ -4,16 +4,19 @@
  * 
  * Usage:
  *   discord-chunker estimate <channel-id> [--limit N]
+ *   discord-chunker read <channel-id> [--since-minutes N] [--since-message <id>]
  *   discord-chunker chunk <channel-id> --by-time <duration>      # e.g., 1h, 1d, 1w
  *   discord-chunker chunk <channel-id> --by-tokens <max-tokens>  # e.g., 4000
  *   discord-chunker chunk <channel-id> --by-tokens <max-tokens> --gap-minutes <N>
  * 
  * Options:
- *   --limit N           Max messages to fetch (default: 100)
- *   --gap-minutes N     Minutes of silence that defines conversation boundary (default: 30)
- *   --format json|text  Output format (default: text)
- *   --before <id>       Fetch messages before this message ID
- *   --after <id>        Fetch messages after this message ID
+ *   --limit N             Max messages to fetch (default: 100)
+ *   --gap-minutes N       Minutes of silence that defines conversation boundary (default: 30)
+ *   --format json|text    Output format (default: text)
+ *   --before <id>         Fetch messages before this message ID
+ *   --after <id>          Fetch messages after this message ID
+ *   --since-minutes N     Only show messages from the last N minutes
+ *   --since-message <id>  Only show messages after this message ID
  */
 
 import { execSync } from 'child_process';
@@ -326,6 +329,7 @@ discord-chunker - Token estimation and conversation-aware chunking
 
 COMMANDS:
   estimate <channel-id>       Estimate total tokens in channel
+  read <channel-id>           Read recent messages (for catching up)
   chunk <channel-id>          Divide channel into chunks
   get-chunk <channel-id> <N>  Get content of chunk N (0-indexed)
 
@@ -338,9 +342,13 @@ OPTIONS:
   --summary-only            Only show chunk summaries, not content
   --before <msg-id>         Fetch messages before this ID
   --after <msg-id>          Fetch messages after this ID
+  --since-minutes N         Only show messages from last N minutes
+  --since-message <id>      Only show messages after this message ID
 
 EXAMPLES:
   discord-chunker estimate 1234567890 --limit 500
+  discord-chunker read 1234567890 --since-minutes 10
+  discord-chunker read 1234567890 --since-message 1470476722968465543
   discord-chunker chunk 1234567890 --by-time 1d --summary-only
   discord-chunker chunk 1234567890 --by-tokens 4000 --gap-minutes 15
   discord-chunker get-chunk 1234567890 0 --by-tokens 4000
@@ -367,6 +375,8 @@ EXAMPLES:
     after: null,
     summaryOnly: false,
     chunkIndex: null,
+    sinceMinutes: null,
+    sinceMessage: null,
   };
   
   // For get-chunk command, third arg is the chunk index
@@ -400,6 +410,12 @@ EXAMPLES:
         break;
       case '--summary-only':
         options.summaryOnly = true;
+        break;
+      case '--since-minutes':
+        options.sinceMinutes = parseInt(args[++i]);
+        break;
+      case '--since-message':
+        options.sinceMessage = args[++i];
         break;
     }
   }
@@ -443,6 +459,60 @@ EXAMPLES:
       }, null, 2));
     } else {
       console.log(formatEstimateText(messages, totalTokens, byAuthor));
+    }
+    
+  } else if (command === 'read') {
+    // Filter messages by time or message ID
+    let filteredMessages = messages;
+    
+    if (options.sinceMinutes) {
+      const cutoff = Date.now() - (options.sinceMinutes * 60 * 1000);
+      filteredMessages = messages.filter(m => new Date(m.timestamp).getTime() >= cutoff);
+    }
+    
+    if (options.sinceMessage) {
+      // Find the index of the since-message and take everything after it
+      const idx = filteredMessages.findIndex(m => m.id === options.sinceMessage);
+      if (idx !== -1) {
+        // Messages are newest-first, so we want everything before this index
+        filteredMessages = filteredMessages.slice(0, idx);
+      }
+    }
+    
+    // Sort oldest first for reading
+    const sorted = [...filteredMessages].sort((a, b) => 
+      new Date(a.timestamp) - new Date(b.timestamp)
+    );
+    
+    if (sorted.length === 0) {
+      console.log('No messages in the specified range.');
+      process.exit(0);
+    }
+    
+    const totalTokens = sorted.reduce((sum, m) => sum + countTokens(formatMessageForContext(m)), 0);
+    
+    if (options.format === 'json') {
+      console.log(JSON.stringify({
+        channelId,
+        messageCount: sorted.length,
+        totalTokens,
+        oldestMessage: sorted[0]?.timestamp,
+        newestMessage: sorted[sorted.length - 1]?.timestamp,
+        messages: sorted.map(m => ({
+          id: m.id,
+          author: m.author?.global_name || m.author?.username,
+          timestamp: m.timestamp,
+          content: m.content,
+        })),
+      }, null, 2));
+    } else {
+      console.log(`\n📖 Channel ${channelId} — ${sorted.length} messages (~${totalTokens} tokens)\n`);
+      console.log(`Time range: ${sorted[0]?.timestamp?.slice(0, 19)} → ${sorted[sorted.length - 1]?.timestamp?.slice(0, 19)}\n`);
+      console.log('─'.repeat(60) + '\n');
+      
+      for (const msg of sorted) {
+        console.log(formatMessageForContext(msg));
+      }
     }
     
   } else if (command === 'chunk' || command === 'get-chunk') {
