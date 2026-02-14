@@ -22,6 +22,104 @@
 import { execSync } from 'child_process';
 import { encoding_for_model } from 'tiktoken';
 
+// ============================================================================
+// Time Parsing & Snowflake Conversion
+// ============================================================================
+
+const DISCORD_EPOCH = 1420070400000n;
+
+function timestampToSnowflake(timestampMs) {
+  return String((BigInt(timestampMs) - DISCORD_EPOCH) << 22n);
+}
+
+/**
+ * Parse a human-readable time string into a Unix timestamp (ms).
+ * Supports: "7:33am", "7:33 PST", "7:33am PST", "2026-02-14 07:33", etc.
+ * Defaults: today's date, America/Los_Angeles timezone.
+ */
+function parseHumanTime(input) {
+  const trimmed = input.trim();
+
+  // Known timezone abbreviations → IANA
+  const tzMap = {
+    PST: 'America/Los_Angeles', PDT: 'America/Los_Angeles',
+    MST: 'America/Denver', MDT: 'America/Denver',
+    CST: 'America/Chicago', CDT: 'America/Chicago',
+    EST: 'America/New_York', EDT: 'America/New_York',
+    UTC: 'UTC', GMT: 'UTC',
+  };
+
+  const defaultTz = 'America/Los_Angeles';
+
+  // Try to extract a trailing timezone abbreviation
+  let tz = defaultTz;
+  let rest = trimmed;
+  const tzMatch = trimmed.match(/\s+(PST|PDT|MST|MDT|CST|CDT|EST|EDT|UTC|GMT)$/i);
+  if (tzMatch) {
+    tz = tzMap[tzMatch[1].toUpperCase()] || defaultTz;
+    rest = trimmed.slice(0, tzMatch.index).trim();
+  }
+
+  // Try time-only pattern: "7:33am", "19:33", "7:33"
+  const timeOnly = rest.match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/i);
+  if (timeOnly) {
+    let hours = parseInt(timeOnly[1]);
+    const minutes = parseInt(timeOnly[2]);
+    const ampm = timeOnly[3]?.toLowerCase();
+    if (ampm === 'pm' && hours < 12) hours += 12;
+    if (ampm === 'am' && hours === 12) hours = 0;
+
+    // Use today's date in the target timezone
+    const now = new Date();
+    const todayStr = now.toLocaleDateString('en-CA', { timeZone: tz }); // YYYY-MM-DD
+    const isoStr = `${todayStr}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+
+    return dateInTimezone(isoStr, tz);
+  }
+
+  // Try full/partial date-time: "2026-02-14 07:33", "2026-02-14 7:33am", etc.
+  const dateTime = rest.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})\s*(am|pm)?$/i);
+  if (dateTime) {
+    const dateStr = dateTime[1];
+    let hours = parseInt(dateTime[2]);
+    const minutes = parseInt(dateTime[3]);
+    const ampm = dateTime[4]?.toLowerCase();
+    if (ampm === 'pm' && hours < 12) hours += 12;
+    if (ampm === 'am' && hours === 12) hours = 0;
+
+    const isoStr = `${dateStr}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+    return dateInTimezone(isoStr, tz);
+  }
+
+  // Fallback: try native Date.parse
+  const parsed = Date.parse(trimmed);
+  if (!isNaN(parsed)) return parsed;
+
+  throw new Error(`Cannot parse time: "${input}"`);
+}
+
+/** Convert a naive datetime string + IANA timezone to epoch ms */
+function dateInTimezone(naiveDatetime, tz) {
+  // Create a date formatter that shows the UTC offset for the target tz
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+
+  // Use a binary-search-like approach: interpret naive datetime as UTC, then adjust
+  const asUtc = new Date(naiveDatetime + 'Z');
+  // Find the offset at that point in time for the target timezone
+  const utcStr = asUtc.toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
+  const tzStr = asUtc.toLocaleString('en-US', { timeZone: tz, hour12: false });
+  const utcDate = new Date(utcStr);
+  const tzDate = new Date(tzStr);
+  const offsetMs = utcDate.getTime() - tzDate.getTime();
+
+  return asUtc.getTime() + offsetMs;
+}
+
 // Initialize tiktoken encoder (cl100k_base is used by GPT-4, Claude, etc.)
 let encoder;
 try {
@@ -344,6 +442,8 @@ OPTIONS:
   --after <msg-id>          Fetch messages after this ID
   --since-minutes N         Only show messages from last N minutes
   --since-message <id>      Only show messages after this message ID
+  --since-time <time>       Messages after this time (e.g., "7:33am", "7:33 PST")
+  --before-time <time>      Messages before this time (e.g., "2026-02-14 07:33")
 
 EXAMPLES:
   discord-chunker estimate 1234567890 --limit 500
@@ -417,7 +517,25 @@ EXAMPLES:
       case '--since-message':
         options.sinceMessage = args[++i];
         break;
+      case '--since-time':
+        options.sinceTime = args[++i];
+        break;
+      case '--before-time':
+        options.beforeTime = args[++i];
+        break;
     }
+  }
+
+  // Convert human-readable times to snowflake IDs
+  if (options.sinceTime) {
+    const ms = parseHumanTime(options.sinceTime);
+    options.after = timestampToSnowflake(ms);
+    console.error(`--since-time "${options.sinceTime}" → snowflake ${options.after} (${new Date(ms).toISOString()})`);
+  }
+  if (options.beforeTime) {
+    const ms = parseHumanTime(options.beforeTime);
+    options.before = timestampToSnowflake(ms);
+    console.error(`--before-time "${options.beforeTime}" → snowflake ${options.before} (${new Date(ms).toISOString()})`);
   }
   
   // Fetch messages

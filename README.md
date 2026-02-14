@@ -72,6 +72,34 @@ discord-chunker chunk 1234567890123456789 --by-tokens 4000 --gap-minutes 15
 discord-chunker chunk 1234567890123456789 --by-tokens 4000 --format json
 ```
 
+### read
+
+Read recent messages (for catching up on a channel):
+
+```bash
+discord-chunker read <channel-id> [--since-minutes N] [--since-message <id>]
+discord-chunker read <channel-id> [--since-time <time>] [--before-time <time>]
+```
+
+Examples:
+```bash
+# Read messages from last 10 minutes
+discord-chunker read 1234567890123456789 --since-minutes 10
+
+# Read messages since a specific message
+discord-chunker read 1234567890123456789 --since-message 1470476722968465543
+
+# Read messages since a human-readable time
+discord-chunker read 1234567890123456789 --since-time "7:33am"
+discord-chunker read 1234567890123456789 --since-time "7:33 PST"
+discord-chunker read 1234567890123456789 --since-time "2026-02-14 07:33"
+
+# Read messages in a time range
+discord-chunker read 1234567890123456789 --since-time "7:00am" --before-time "8:00am"
+```
+
+Output is chronological (oldest first) — ideal for context-building.
+
 ### get-chunk
 
 Retrieve a specific chunk's content:
@@ -98,6 +126,8 @@ discord-chunker get-chunk 1234567890123456789 1 --by-tokens 4000
 | `--summary-only` | Only show chunk summaries | false |
 | `--before <id>` | Fetch messages before this ID | - |
 | `--after <id>` | Fetch messages after this ID | - |
+| `--since-time <time>` | Messages after this time (human-readable) | - |
+| `--before-time <time>` | Messages before this time (human-readable) | - |
 
 ## Conversation-Aware Chunking
 
